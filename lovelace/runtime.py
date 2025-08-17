@@ -1,18 +1,3 @@
-# lovelace_interpreter.py
-# Minimal-but-real Lovelace interpreter (Python 3.12)
-# Supports:
-#  - comments ### ...
-#  - var x (expr)
-#  - mem[i] = expr   /  mem[i] reads in expr
-#  - out expr
-#  - sleep(seconds)
-#  - if/elif/else ... end
-#  - loop (N): ... end
-#  - loop arr: ... end
-#  - fn name(args) => expr
-#  - fn name(args): ... end + return expr
-#  - spawn (n) (name1, name2, ...) and spawn (n) (RAN) [simulated]
-
 from __future__ import annotations
 from dataclasses import dataclass
 import time
@@ -57,8 +42,6 @@ class LovelaceInterpreter:
         i = start
         while i < end:
             line = lines[i].strip()
-
-            # end (handled by caller)
             if line == "end":
                 return i + 1
 
@@ -111,13 +94,11 @@ class LovelaceInterpreter:
                 i += 1
                 continue
 
-            # if (...) :    / elif (...) :   / else:
+            # if / elif / else
             if re.match(r"^if\s*\(.+\):\s*$", line):
                 i = self._handle_if(lines, i, end)
                 continue
-
             if re.match(r"^elif\s*\(.+\):\s*$", line) or line == "else:":
-                # these should be consumed inside _handle_if
                 raise RuntimeError("‘elif/else’ without matching ‘if’")
 
             # loop (N):
@@ -125,7 +106,6 @@ class LovelaceInterpreter:
             if m:
                 i = self._handle_loop_count(lines, i, end, m.group(1))
                 continue
-
             # loop arr:
             m = re.match(r"^loop\s+([A-Za-z_]\w*):\s*$", line)
             if m:
@@ -146,7 +126,6 @@ class LovelaceInterpreter:
             if m:
                 name, arglist = m.groups()
                 args = [a.strip() for a in arglist.split(",") if a.strip()]
-                # find matching end
                 body_start = i + 1
                 j = body_start
                 depth = 1
@@ -162,12 +141,11 @@ class LovelaceInterpreter:
                 i = j
                 continue
 
-            # return expr (only valid in fn body)
+            # return expr outside fn
             if re.match(r"^return\s+.+$", line):
-                # Handled by function executor; if we get here, it's a stray return
                 raise RuntimeError("‘return’ used outside of a function")
 
-            # bare function calls (e.g., foo(1,2))
+            # bare function calls
             m = re.match(r"^([A-Za-z_]\w*)\(([^)]*)\)\s*$", line)
             if m:
                 self._call_func(m.group(1), [a.strip() for a in m.group(2).split(",")] if m.group(2).strip() else [])
@@ -179,7 +157,15 @@ class LovelaceInterpreter:
 
     # ------------- Helpers -------------
     def _eval(self, expr: str) -> Any:
-        # Replace mem[i] reads for Python eval
+        # First, check if this is a bare Lovelace function call
+        m = re.match(r"^([A-Za-z_]\w*)\((.*)\)$", expr.strip())
+        if m:
+            fn_name, arglist = m.groups()
+            args = [a.strip() for a in arglist.split(",")] if arglist.strip() else []
+            if fn_name in self.funcs:
+                return self._call_func(fn_name, args)
+
+        # Replace mem[i] reads
         def mem_read(m):
             idx = int(self._eval(m.group(1)))
             return repr(self.mem.get(idx, 0))
@@ -191,12 +177,10 @@ class LovelaceInterpreter:
             "RAN_int": lambda a,b: random.randint(int(a), int(b)),
             "RAN_pick": lambda arr: random.choice(list(arr)),
         }
-        # add variables by value
         env.update(self.vars)
         try:
             return eval(expr_py, {"__builtins__": {}}, env)
         except Exception:
-            # Treat as string literal if not quoted? fall back to raw
             return expr.strip('"')
 
     def _call_func(self, name: str, arg_exprs: List[str]) -> Any:
@@ -206,45 +190,35 @@ class LovelaceInterpreter:
         args_vals = [self._eval(a) for a in arg_exprs]
 
         if fn.expr is not None:
-            # expression fn
             local = dict(zip(fn.args, args_vals))
-            # Evaluate expression with locals
             env = dict(self.vars)
             env.update(local)
             expr = fn.expr
-            # allow mem[] reads
             def mem_read(m):
                 idx = int(self._eval(m.group(1)))
                 return repr(self.mem.get(idx, 0))
             expr_py = re.sub(r"mem\[(.+?)\]", mem_read, expr)
             return eval(expr_py, {"__builtins__": {}}, env)
 
-        # block fn: execute body with a small call frame
         frame_vars_backup = dict(self.vars)
         try:
             for k, v in zip(fn.args, args_vals):
                 self.vars[k] = v
-            # run lines until 'return'
             i = 0
             while i < len(fn.body or []):
                 line = (fn.body or [])[i].strip()
                 if line.startswith("return "):
                     return self._eval(line[len("return "):])
-                # Execute a mini-block by reusing executor on a single line or nested structures
-                # We delegate by crafting a small temporary program
                 self._exec_block([line], 0, 1)
                 i += 1
         finally:
             self.vars = frame_vars_backup
 
     def _handle_if(self, lines: List[str], i: int, end: int) -> int:
-        # find whole if/elif/else group up to matching end
         j = i + 1
         depth = 1
-        blocks: List[Tuple[str | None, Tuple[int,int]]] = []  # (condition or None for else, (start,end))
-        # current block start right after the if/elif/else line
+        blocks: List[Tuple[str | None, Tuple[int,int]]] = []
         cur_start = j
-
         headers = [(i, lines[i].strip())]
 
         while j < end and depth > 0:
@@ -254,15 +228,12 @@ class LovelaceInterpreter:
             elif t == "end":
                 depth -= 1
                 if depth == 0:
-                    # close last block
                     headers.append((j, "end"))
                     break
             elif depth == 1 and (re.match(r"^elif\s*\(.+\):\s*$", t) or t == "else:"):
                 headers.append((j, t))
             j += 1
 
-        # Build block ranges
-        # headers like: (if_line), (elif_line)?, (else_line)?, (end_line)
         for idx in range(len(headers)-1):
             line_idx, hdr = headers[idx]
             next_idx, _ = headers[idx+1]
@@ -277,16 +248,14 @@ class LovelaceInterpreter:
             elif hdr.startswith("else"):
                 blocks.append((None, (start_block, end_block)))
 
-        # Execute first matching
         for cond, (bs, be) in blocks:
             if cond is None or bool(self._eval(cond)):
                 self._exec_block(lines, bs, be)
                 break
 
-        return headers[-1][0] + 1  # position after end
+        return headers[-1][0] + 1
 
     def _handle_loop_count(self, lines: List[str], i: int, end: int, count_expr: str) -> int:
-        # find matching end for this loop
         j = i + 1
         depth = 1
         while j < end and depth > 0:
