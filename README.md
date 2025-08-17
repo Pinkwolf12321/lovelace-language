@@ -1,6 +1,6 @@
 # Lovelace
 Lovelace is a minimal-but-real scripting language runtime and editor written in Python.
-It supports variable assignments, memory arrays, loops, functions, and simple I/O.
+It supports variable assignments, memory arrays, loops, functions, and simple I/O. It is a High-Level Assembly language.
 
 This project provides:
 - Runtime: Execute .lovelace scripts (runtime.py)
@@ -60,3 +60,4 @@ PRs and suggestions welcome! Make sure to test your scripts in both CLI and GUI 
 
 ### License
 Lovelace Programming Language © Blyth Laiman Karl 2025. All Rights Reserved.
+
